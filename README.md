@@ -18,15 +18,44 @@ Each session runs with a fresh context window. Progress is tracked via `feature_
 
 - Python 3.8+
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
-- Claude Code OAuth token (run `claude setup-token`)
 
 ### Setup
 
-```bash
-# 1. Set your OAuth token
-export CLAUDE_CODE_OAUTH_TOKEN='your-token-here'
+**Step 1:** Copy the `auto-build` folder and `.claude/commands/spec.md` into your project
 
-# 2. Create a spec interactively (also sets up Python environment)
+Copy the `auto-build` folder into your project (new or existing). Also copy the `.claude/commands/spec.md` file:
+
+```bash
+# Set the path to your cloned Claude-AutoBuild repository
+AUTOBUILD_REPO="/path/to/Claude-AutoBuild"
+
+# Copy the auto-build folder
+cp -r "$AUTOBUILD_REPO/auto-build" ./auto-build
+
+# Create .claude/commands directory if it doesn't exist
+mkdir -p .claude/commands
+
+# Copy the spec.md file
+cp "$AUTOBUILD_REPO/.claude/commands/spec.md" .claude/commands/spec.md
+```
+
+**Step 2:** Copy `.env.example` to `.env`
+
+```bash
+cp auto-build/.env.example auto-build/.env
+```
+
+**Step 3:** Get your OAuth token and add it to `.env`
+
+```bash
+# Run this command to get your token
+claude setup-token
+
+# Copy the token and paste it into auto-build/.env
+# Replace 'your-oauth-token-here' with your actual token
+```
+
+**Step 4:** Create a spec interactively (also sets up Python environment)
 
 You have two options:
 
@@ -50,10 +79,13 @@ Open your IDE's AI agent chat and write:
 
 The spec agent will guide you through creating a detailed specification and set up the Python environment automatically.
 
-# 3. Activate the virtual environment
+**Step 5:** Activate the virtual environment and run
+
+```bash
+# Activate the virtual environment
 source auto-build/.venv/bin/activate
 
-# 4. Run the autonomous build
+# Run the autonomous build
 python auto-build/run.py --spec 001
 ```
 
