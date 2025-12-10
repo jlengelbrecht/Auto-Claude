@@ -47,8 +47,27 @@ if env_file.exists():
 
 from agent import run_autonomous_agent
 from coordinator import SwarmCoordinator
-from progress import count_chunks
+from progress import count_chunks, print_paused_banner
 from linear_integration import is_linear_enabled, LinearManager
+from ui import (
+    Icons,
+    icon,
+    box,
+    success,
+    error,
+    warning,
+    info,
+    muted,
+    highlight,
+    bold,
+    print_header,
+    print_status,
+    print_key_value,
+    select_menu,
+    MenuOption,
+    StatusManager,
+    BuildState,
+)
 from workspace import (
     WorkspaceMode,
     WorkspaceChoice,
@@ -397,11 +416,14 @@ def validate_environment(spec_dir: Path) -> bool:
 
 def print_banner() -> None:
     """Print the Auto-Build banner."""
-    print("\n" + "=" * 70)
-    print("  AUTO-BUILD FRAMEWORK")
-    print("  Autonomous Multi-Session Coding Agent")
-    print("  Chunk-Based Implementation with Phase Dependencies")
-    print("=" * 70)
+    content = [
+        bold(f"{icon(Icons.LIGHTNING)} AUTO-BUILD FRAMEWORK"),
+        "",
+        "Autonomous Multi-Session Coding Agent",
+        muted("Chunk-Based Implementation with Phase Dependencies"),
+    ]
+    print()
+    print(box(content, width=70, style="heavy"))
 
 
 def main() -> None:
@@ -625,43 +647,68 @@ def main() -> None:
                 print(f"Resume: python auto-build/run.py --spec {spec_dir.name} --qa")
 
     except KeyboardInterrupt:
-        print("\n\n" + "-" * 70)
-        print("  PAUSED BY USER (Ctrl+C)")
-        print("-" * 70)
-        print("\nProgress has been saved.")
+        # Print paused banner
+        print_paused_banner(spec_dir, spec_dir.name, has_worktree=bool(worktree_manager))
 
-        # Note about workspace
-        if worktree_manager:
-            print("\nYour build is in a separate workspace and is safe.")
-            print(f"To see it: python auto-build/run.py --spec {spec_dir.name} --review")
-            print(f"To add it: python auto-build/run.py --spec {spec_dir.name} --merge")
+        # Update status file
+        status_manager = StatusManager(project_dir)
+        status_manager.update(state=BuildState.PAUSED)
 
-        # Offer to add human input
+        # Offer to add human input with enhanced menu
         try:
-            print("\n" + "=" * 70)
-            print("  ADD INSTRUCTIONS FOR THE AGENT")
-            print("=" * 70)
-            print("\nOptions:")
-            print("  [1] Type instructions directly (press Enter twice when done)")
-            print("  [2] Paste from clipboard (use Cmd+V on macOS, Ctrl+Shift+V on Linux)")
-            print("  [3] Read from file")
-            print("  [n] Skip - don't add instructions")
-            print("  [q] Quit without resuming")
-            print()
-            print("  TIP: To copy text, use Cmd+C (macOS) or Ctrl+Shift+C (Linux)")
-            print("       Ctrl+C in terminal is reserved for interrupt signals")
-            print()
+            options = [
+                MenuOption(
+                    key="type",
+                    label="Type instructions",
+                    icon=Icons.EDIT,
+                    description="Enter guidance for the agent's next session",
+                ),
+                MenuOption(
+                    key="paste",
+                    label="Paste from clipboard",
+                    icon=Icons.CLIPBOARD,
+                    description="Paste text you've copied (Cmd+V / Ctrl+Shift+V)",
+                ),
+                MenuOption(
+                    key="file",
+                    label="Read from file",
+                    icon=Icons.DOCUMENT,
+                    description="Load instructions from a text file",
+                ),
+                MenuOption(
+                    key="skip",
+                    label="Continue without instructions",
+                    icon=Icons.SKIP,
+                    description="Resume the build as-is",
+                ),
+                MenuOption(
+                    key="quit",
+                    label="Quit",
+                    icon=Icons.DOOR,
+                    description="Exit without resuming",
+                ),
+            ]
 
-            choice = input("Your choice [1/2/3/n/q]: ").strip().lower()
+            choice = select_menu(
+                title="What would you like to do?",
+                options=options,
+                subtitle="Progress saved. You can add instructions for the agent.",
+                allow_quit=False,  # We have explicit quit option
+            )
 
-            if choice == 'q':
-                print("\nExiting...")
+            if choice == 'quit' or choice is None:
+                print()
+                print_status("Exiting...", "info")
+                status_manager.set_inactive()
                 sys.exit(0)
 
-            if choice == '3':
+            human_input = ""
+
+            if choice == 'file':
                 # Read from file
-                print("\nEnter the path to your instructions file:")
-                file_path = input("> ").strip()
+                print()
+                print(f"{icon(Icons.DOCUMENT)} Enter the path to your instructions file:")
+                file_path = input(f"  {icon(Icons.POINTER)} ").strip()
 
                 if file_path:
                     try:
@@ -669,20 +716,20 @@ def main() -> None:
                         file_path = Path(file_path).expanduser().resolve()
                         if file_path.exists():
                             human_input = file_path.read_text().strip()
+                            print_status(f"Loaded {len(human_input)} characters from file", "success")
                         else:
-                            print(f"\nFile not found: {file_path}")
-                            human_input = ""
+                            print_status(f"File not found: {file_path}", "error")
                     except Exception as e:
-                        print(f"\nError reading file: {e}")
-                        human_input = ""
-                else:
-                    human_input = ""
+                        print_status(f"Error reading file: {e}", "error")
 
-            elif choice in ['1', '2', 'y', 'yes']:
-                print("\n" + "-" * 70)
-                print("Enter/paste your instructions below.")
-                print("Press Enter on an empty line when done:")
-                print("-" * 70)
+            elif choice in ['type', 'paste']:
+                print()
+                content = [
+                    "Enter/paste your instructions below.",
+                    muted("Press Enter on an empty line when done."),
+                ]
+                print(box(content, width=60, style="light"))
+                print()
 
                 lines = []
                 empty_count = 0
@@ -697,39 +744,53 @@ def main() -> None:
                             empty_count = 0
                             lines.append(line)
                     except KeyboardInterrupt:
-                        print("\n\nExiting without saving instructions...")
+                        print()
+                        print_status("Exiting without saving instructions...", "warning")
+                        status_manager.set_inactive()
                         sys.exit(0)
 
                 human_input = "\n".join(lines).strip()
-            else:
-                human_input = ""
 
             if human_input:
                 # Save to HUMAN_INPUT.md
                 input_file = spec_dir / "HUMAN_INPUT.md"
                 input_file.write_text(human_input)
-                print("\n" + "=" * 70)
-                print("  INSTRUCTIONS SAVED")
-                print("=" * 70)
-                print(f"\nYour instructions have been saved to:")
-                print(f"  {input_file}")
-                print("\nThe agent will read and follow these instructions when you resume.")
-            else:
-                print("\nNo instructions provided.")
+
+                content = [
+                    success(f"{icon(Icons.SUCCESS)} INSTRUCTIONS SAVED"),
+                    "",
+                    f"Saved to: {highlight(str(input_file.name))}",
+                    "",
+                    muted("The agent will read and follow these instructions when you resume."),
+                ]
+                print()
+                print(box(content, width=70, style="heavy"))
+            elif choice != 'skip':
+                print()
+                print_status("No instructions provided.", "info")
 
         except KeyboardInterrupt:
             # User pressed Ctrl+C again during input prompt - exit immediately
-            print("\n\nExiting...")
+            print()
+            print_status("Exiting...", "warning")
+            status_manager = StatusManager(project_dir)
+            status_manager.set_inactive()
             sys.exit(0)
         except EOFError:
             # stdin closed
             pass
 
-        print("\n" + "-" * 70)
-        print("  TO RESUME")
-        print("-" * 70)
-        print(f"\nRun the same command:")
-        print(f"  python auto-build/run.py --spec {spec_dir.name}")
+        # Resume instructions
+        print()
+        content = [
+            bold(f"{icon(Icons.PLAY)} TO RESUME"),
+            "",
+            f"Run: {highlight(f'python auto-build/run.py --spec {spec_dir.name}')}",
+        ]
+        if worktree_manager:
+            content.append("")
+            content.append(muted("Your build is in a separate workspace and is safe."))
+        print(box(content, width=70, style="light"))
         print()
     except Exception as e:
         print(f"\nFatal error: {e}")

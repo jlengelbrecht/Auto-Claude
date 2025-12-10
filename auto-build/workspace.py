@@ -18,6 +18,8 @@ Terminology mapping (technical -> user-friendly):
 - uncommitted changes -> "unsaved work"
 - merge -> "add to your project"
 - working directory -> "your project"
+
+Enhanced with icons, colors, and interactive menus.
 """
 
 import subprocess
@@ -27,6 +29,23 @@ from pathlib import Path
 from typing import Optional
 
 from worktree import WorktreeManager, WorktreeInfo, STAGING_WORKTREE_NAME
+from ui import (
+    Icons,
+    icon,
+    box,
+    success,
+    error,
+    warning,
+    info,
+    muted,
+    highlight,
+    bold,
+    print_header,
+    print_status,
+    print_key_value,
+    select_menu,
+    MenuOption,
+)
 
 
 class WorkspaceMode(Enum):
@@ -104,55 +123,62 @@ def choose_workspace(
 
     if has_unsaved:
         # Unsaved work detected - use isolated mode for safety
+        content = [
+            success(f"{icon(Icons.SHIELD)} YOUR WORK IS PROTECTED"),
+            "",
+            "You have unsaved work in your project.",
+            "",
+            "To keep your work safe, the AI will build in a",
+            "separate workspace. Your current files won't be",
+            "touched until you're ready.",
+        ]
         print()
-        print("=" * 60)
-        print("  YOUR WORK IS PROTECTED")
-        print("=" * 60)
-        print()
-        print("You have unsaved work in your project.")
-        print()
-        print("To keep your work safe, the AI will build in a")
-        print("separate workspace. Your current files won't be")
-        print("touched until you're ready.")
+        print(box(content, width=60, style="heavy"))
         print()
 
         try:
-            input("Press Enter to continue...")
+            input(f"Press Enter to continue...")
         except KeyboardInterrupt:
-            print("\n\nCancelled.")
+            print()
+            print_status("Cancelled.", "info")
             sys.exit(0)
 
         return WorkspaceMode.ISOLATED
 
-    # Clean working directory - give choice
-    print()
-    print("=" * 60)
-    print("  WHERE SHOULD THE AI BUILD YOUR FEATURE?")
-    print("=" * 60)
-    print()
-    print("[1] In a separate workspace (Recommended)")
-    print("    Your current files stay untouched")
-    print("    You can review changes before keeping them")
-    print("    Easy to undo if you don't like it")
-    print()
-    print("[2] Right here in your project")
-    print("    Changes happen directly in your files")
-    print("    Best if you're not working on anything else")
-    print()
+    # Clean working directory - give choice with enhanced menu
+    options = [
+        MenuOption(
+            key="isolated",
+            label="Separate workspace (Recommended)",
+            icon=Icons.SHIELD,
+            description="Your current files stay untouched. Easy to review and undo.",
+        ),
+        MenuOption(
+            key="direct",
+            label="Right here in your project",
+            icon=Icons.LIGHTNING,
+            description="Changes happen directly. Best if you're not working on anything else.",
+        ),
+    ]
 
-    try:
-        choice = input("Your choice [1]: ").strip() or "1"
-    except KeyboardInterrupt:
-        print("\n\nCancelled.")
+    choice = select_menu(
+        title="Where should the AI build your feature?",
+        options=options,
+        allow_quit=True,
+    )
+
+    if choice is None:
+        print()
+        print_status("Cancelled.", "info")
         sys.exit(0)
 
-    if choice == "2":
+    if choice == "direct":
         print()
-        print("Got it! Working directly in your project.")
+        print_status("Working directly in your project.", "info")
         return WorkspaceMode.DIRECT
     else:
         print()
-        print("Got it! Using a separate workspace for safety.")
+        print_status("Using a separate workspace for safety.", "success")
         return WorkspaceMode.ISOLATED
 
 
@@ -181,7 +207,7 @@ def setup_workspace(
 
     # Create isolated workspace using staging worktree
     print()
-    print("Setting up separate workspace...")
+    print_status("Setting up separate workspace...", "progress")
 
     manager = WorktreeManager(project_dir)
     manager.setup()
@@ -189,7 +215,7 @@ def setup_workspace(
     # Get or create the staging worktree
     info = manager.get_or_create_staging(spec_name)
 
-    print(f"Workspace ready: {info.path}")
+    print_status(f"Workspace ready: {info.path.name}", "success")
     print()
 
     return info.path, manager
@@ -203,17 +229,17 @@ def show_build_summary(manager: WorktreeManager, name: str = STAGING_WORKTREE_NA
     total = summary["new_files"] + summary["modified_files"] + summary["deleted_files"]
 
     if total == 0:
-        print("  No changes were made.")
+        print_status("No changes were made.", "info")
         return
 
     print()
-    print("What was built:")
+    print(bold("What was built:"))
     if summary["new_files"] > 0:
-        print(f"  + {summary['new_files']} new file{'s' if summary['new_files'] != 1 else ''}")
+        print(success(f"  + {summary['new_files']} new file{'s' if summary['new_files'] != 1 else ''}"))
     if summary["modified_files"] > 0:
-        print(f"  ~ {summary['modified_files']} modified file{'s' if summary['modified_files'] != 1 else ''}")
+        print(info(f"  ~ {summary['modified_files']} modified file{'s' if summary['modified_files'] != 1 else ''}"))
     if summary["deleted_files"] > 0:
-        print(f"  - {summary['deleted_files']} deleted file{'s' if summary['deleted_files'] != 1 else ''}")
+        print(error(f"  - {summary['deleted_files']} deleted file{'s' if summary['deleted_files'] != 1 else ''}"))
 
 
 def show_changed_files(manager: WorktreeManager, name: str = STAGING_WORKTREE_NAME) -> None:
@@ -221,20 +247,20 @@ def show_changed_files(manager: WorktreeManager, name: str = STAGING_WORKTREE_NA
     files = manager.get_changed_files(name)
 
     if not files:
-        print("  No changes.")
+        print_status("No changes.", "info")
         return
 
-    status_labels = {
-        "A": "+ (new)",
-        "M": "~ (modified)",
-        "D": "- (deleted)",
-    }
-
     print()
-    print("Changed files:")
+    print(bold("Changed files:"))
     for status, filepath in files:
-        label = status_labels.get(status, status)
-        print(f"  {label} {filepath}")
+        if status == "A":
+            print(success(f"  + {filepath}"))
+        elif status == "M":
+            print(info(f"  ~ {filepath}"))
+        elif status == "D":
+            print(error(f"  - {filepath}"))
+        else:
+            print(f"  {status} {filepath}")
 
 
 def finalize_workspace(
@@ -260,55 +286,70 @@ def finalize_workspace(
     """
     if manager is None:
         # Direct mode - nothing to finalize
+        content = [
+            success(f"{icon(Icons.SUCCESS)} BUILD COMPLETE!"),
+            "",
+            "Changes were made directly to your project.",
+            muted("Use 'git status' to see what changed."),
+        ]
         print()
-        print("=" * 60)
-        print("  BUILD COMPLETE!")
-        print("=" * 60)
-        print()
-        print("Changes were made directly to your project.")
-        print("Use 'git status' to see what changed.")
+        print(box(content, width=60, style="heavy"))
         return WorkspaceChoice.MERGE  # Already merged
 
     # Isolated mode - show options with testing as the recommended path
+    content = [
+        success(f"{icon(Icons.SUCCESS)} BUILD COMPLETE!"),
+        "",
+        "The AI built your feature in a separate workspace.",
+    ]
     print()
-    print("=" * 60)
-    print("  BUILD COMPLETE!")
-    print("=" * 60)
-    print()
-    print("The AI built your feature in a separate workspace.")
+    print(box(content, width=60, style="heavy"))
 
     show_build_summary(manager)
 
     # Get the staging path for test instructions
     staging_path = manager.get_staging_path()
 
-    print()
-    print("What would you like to do?")
-    print()
-    print("[1] Test the feature (Recommended)")
-    print("    Run the app and try it out before adding to your project")
-    print()
-    print("[2] Add to my project now")
-    print("    Merge the changes into your files immediately")
-    print()
-    print("[3] Review what changed")
-    print("    See exactly what files were modified")
-    print()
-    print("[4] Decide later")
-    print("    Your build is saved - you can come back anytime")
-    print()
+    # Enhanced menu for post-build options
+    options = [
+        MenuOption(
+            key="test",
+            label="Test the feature (Recommended)",
+            icon=Icons.PLAY,
+            description="Run the app and try it out before adding to your project",
+        ),
+        MenuOption(
+            key="merge",
+            label="Add to my project now",
+            icon=Icons.SUCCESS,
+            description="Merge the changes into your files immediately",
+        ),
+        MenuOption(
+            key="review",
+            label="Review what changed",
+            icon=Icons.FILE,
+            description="See exactly what files were modified",
+        ),
+        MenuOption(
+            key="later",
+            label="Decide later",
+            icon=Icons.PAUSE,
+            description="Your build is saved - you can come back anytime",
+        ),
+    ]
 
-    try:
-        choice = input("Your choice [1]: ").strip() or "1"
-    except KeyboardInterrupt:
-        print("\n\nNo problem! Your build is saved.")
-        choice = "4"
+    print()
+    choice = select_menu(
+        title="What would you like to do?",
+        options=options,
+        allow_quit=False,
+    )
 
-    if choice == "1":
+    if choice == "test":
         return WorkspaceChoice.TEST
-    elif choice == "2":
+    elif choice == "merge":
         return WorkspaceChoice.MERGE
-    elif choice == "3":
+    elif choice == "review":
         return WorkspaceChoice.REVIEW
     else:
         return WorkspaceChoice.LATER
@@ -333,19 +374,21 @@ def handle_workspace_choice(
 
     if choice == WorkspaceChoice.TEST:
         # Show testing instructions
+        content = [
+            bold(f"{icon(Icons.PLAY)} TEST YOUR FEATURE"),
+            "",
+            "Your feature is ready to test in a separate workspace.",
+        ]
         print()
-        print("=" * 60)
-        print("  TEST YOUR FEATURE")
-        print("=" * 60)
-        print()
-        print("Your feature is ready to test in a separate workspace.")
+        print(box(content, width=60, style="heavy"))
+
         print()
         print("To test it, open a NEW terminal and run:")
         print()
         if staging_path:
-            print(f"  cd {staging_path}")
+            print(highlight(f"  cd {staging_path}"))
         else:
-            print(f"  cd {project_dir}/.worktrees/{STAGING_WORKTREE_NAME}")
+            print(highlight(f"  cd {project_dir}/.worktrees/{STAGING_WORKTREE_NAME}"))
 
         # Show likely test/run commands
         if staging_path:
@@ -356,63 +399,62 @@ def handle_workspace_choice(
                 print(f"  {cmd}")
 
         print()
-        print("-" * 60)
+        print(muted("-" * 60))
         print()
         print("When you're done testing:")
-        print(f"  python auto-build/run.py --spec {spec_name} --merge")
+        print(highlight(f"  python auto-build/run.py --spec {spec_name} --merge"))
         print()
         print("To discard (if you don't like it):")
-        print(f"  python auto-build/run.py --spec {spec_name} --discard")
+        print(muted(f"  python auto-build/run.py --spec {spec_name} --discard"))
         print()
 
     elif choice == WorkspaceChoice.MERGE:
         print()
-        print("Adding changes to your project...")
-        success = manager.merge_staging(delete_after=True)
+        print_status("Adding changes to your project...", "progress")
+        success_result = manager.merge_staging(delete_after=True)
 
-        if success:
+        if success_result:
             print()
-            print("Done! Your feature has been added to your project.")
+            print_status("Your feature has been added to your project.", "success")
         else:
             print()
-            print("There was a conflict merging the changes.")
-            print("Your build is still saved in the separate workspace.")
-            print()
-            print("You may need to merge manually or ask for help.")
+            print_status("There was a conflict merging the changes.", "error")
+            print(muted("Your build is still saved in the separate workspace."))
+            print(muted("You may need to merge manually or ask for help."))
 
     elif choice == WorkspaceChoice.REVIEW:
         show_changed_files(manager)
         print()
-        print("-" * 60)
+        print(muted("-" * 60))
         print()
         print("To see full details of changes:")
-        info = manager.get_staging_info()
-        if info:
-            print(f"  git diff {info.base_branch}...{info.branch}")
+        info_obj = manager.get_staging_info()
+        if info_obj:
+            print(muted(f"  git diff {info_obj.base_branch}...{info_obj.branch}"))
         print()
         print("To test the feature:")
         if staging_path:
-            print(f"  cd {staging_path}")
+            print(highlight(f"  cd {staging_path}"))
         print()
         print("To add these changes to your project:")
-        print(f"  python auto-build/run.py --spec {spec_name} --merge")
+        print(highlight(f"  python auto-build/run.py --spec {spec_name} --merge"))
         print()
 
     else:  # LATER
         print()
-        print("No problem! Your build is saved.")
+        print_status("No problem! Your build is saved.", "success")
         print()
         print("To test the feature:")
         if staging_path:
-            print(f"  cd {staging_path}")
+            print(highlight(f"  cd {staging_path}"))
         else:
-            print(f"  cd {project_dir}/.worktrees/{STAGING_WORKTREE_NAME}")
+            print(highlight(f"  cd {project_dir}/.worktrees/{STAGING_WORKTREE_NAME}"))
         print()
         print("When you're ready to add it:")
-        print(f"  python auto-build/run.py --spec {spec_name} --merge")
+        print(highlight(f"  python auto-build/run.py --spec {spec_name} --merge"))
         print()
         print("To see what was built:")
-        print(f"  python auto-build/run.py --spec {spec_name} --review")
+        print(muted(f"  python auto-build/run.py --spec {spec_name} --review"))
         print()
 
 
@@ -433,16 +475,17 @@ def merge_existing_build(project_dir: Path, spec_name: str) -> bool:
 
     if not worktree_path:
         print()
-        print(f"No existing build found for '{spec_name}'.")
+        print_status(f"No existing build found for '{spec_name}'.", "warning")
         print()
         print("To start a new build:")
-        print(f"  python auto-build/run.py --spec {spec_name}")
+        print(highlight(f"  python auto-build/run.py --spec {spec_name}"))
         return False
 
+    content = [
+        bold(f"{icon(Icons.SUCCESS)} ADDING BUILD TO YOUR PROJECT"),
+    ]
     print()
-    print("=" * 60)
-    print("  ADDING BUILD TO YOUR PROJECT")
-    print("=" * 60)
+    print(box(content, width=60, style="heavy"))
 
     manager = WorktreeManager(project_dir)
     # Load the staging worktree info
@@ -451,16 +494,16 @@ def merge_existing_build(project_dir: Path, spec_name: str) -> bool:
     show_build_summary(manager)
     print()
 
-    success = manager.merge_staging(delete_after=True)
+    success_result = manager.merge_staging(delete_after=True)
 
-    if success:
+    if success_result:
         print()
-        print("Done! Your feature has been added to your project.")
+        print_status("Your feature has been added to your project.", "success")
         return True
     else:
         print()
-        print("There was a conflict merging the changes.")
-        print("You may need to merge manually.")
+        print_status("There was a conflict merging the changes.", "error")
+        print(muted("You may need to merge manually."))
         return False
 
 
@@ -481,36 +524,37 @@ def review_existing_build(project_dir: Path, spec_name: str) -> bool:
 
     if not worktree_path:
         print()
-        print(f"No existing build found for '{spec_name}'.")
+        print_status(f"No existing build found for '{spec_name}'.", "warning")
         print()
         print("To start a new build:")
-        print(f"  python auto-build/run.py --spec {spec_name}")
+        print(highlight(f"  python auto-build/run.py --spec {spec_name}"))
         return False
 
+    content = [
+        bold(f"{icon(Icons.FILE)} BUILD CONTENTS"),
+    ]
     print()
-    print("=" * 60)
-    print("  BUILD CONTENTS")
-    print("=" * 60)
+    print(box(content, width=60, style="heavy"))
 
     manager = WorktreeManager(project_dir)
     # Load the staging worktree info
-    info = manager.get_staging_info()
+    info_obj = manager.get_staging_info()
 
     show_build_summary(manager)
     show_changed_files(manager)
 
     print()
-    print("-" * 60)
+    print(muted("-" * 60))
     print()
     print("To test the feature:")
-    print(f"  cd {worktree_path}")
+    print(highlight(f"  cd {worktree_path}"))
     print()
     print("To add these changes to your project:")
-    print(f"  python auto-build/run.py --spec {spec_name} --merge")
+    print(highlight(f"  python auto-build/run.py --spec {spec_name} --merge"))
     print()
     print("To see full diff:")
-    if info:
-        print(f"  git diff {info.base_branch}...{info.branch}")
+    if info_obj:
+        print(muted(f"  git diff {info_obj.base_branch}...{info_obj.branch}"))
     print()
 
     return True
@@ -535,42 +579,43 @@ def discard_existing_build(project_dir: Path, spec_name: str) -> bool:
 
     if not worktree_path:
         print()
-        print(f"No existing build found for '{spec_name}'.")
+        print_status(f"No existing build found for '{spec_name}'.", "warning")
         return False
 
+    content = [
+        warning(f"{icon(Icons.WARNING)} DELETE BUILD RESULTS?"),
+        "",
+        "This will permanently delete all work for this build.",
+    ]
     print()
-    print("=" * 60)
-    print("  DELETE BUILD RESULTS?")
-    print("=" * 60)
+    print(box(content, width=60, style="heavy"))
 
     manager = WorktreeManager(project_dir)
     # Load the staging worktree info
     manager.get_staging_info()
 
-    print()
-    print("This will permanently delete all work for this build.")
-
     show_build_summary(manager)
 
     print()
-    print("Are you sure? Type 'delete' to confirm: ", end="")
+    print(f"Are you sure? Type {highlight('delete')} to confirm: ", end="")
 
     try:
         confirmation = input().strip().lower()
     except KeyboardInterrupt:
-        print("\n\nCancelled. Your build is still saved.")
+        print()
+        print_status("Cancelled. Your build is still saved.", "info")
         return False
 
     if confirmation != "delete":
         print()
-        print("Cancelled. Your build is still saved.")
+        print_status("Cancelled. Your build is still saved.", "info")
         return False
 
     # Actually delete
     manager.remove_staging(delete_branch=True)
 
     print()
-    print("Build deleted.")
+    print_status("Build deleted.", "success")
     return True
 
 
@@ -586,36 +631,64 @@ def check_existing_build(project_dir: Path, spec_name: str) -> bool:
     if not worktree_path:
         return False  # No existing build
 
+    content = [
+        info(f"{icon(Icons.INFO)} EXISTING BUILD FOUND"),
+        "",
+        "There's already a build in progress for this spec.",
+    ]
     print()
-    print("=" * 60)
-    print("  EXISTING BUILD FOUND")
-    print("=" * 60)
-    print()
-    print("There's already a build in progress for this spec.")
-    print()
-    print("[1] Continue where it left off")
-    print("[2] Review what was built")
-    print("[3] Add to my project now")
-    print("[4] Start fresh (discard current build)")
-    print()
+    print(box(content, width=60, style="heavy"))
 
-    try:
-        choice = input("Your choice [1]: ").strip() or "1"
-    except KeyboardInterrupt:
-        print("\n\nCancelled.")
+    options = [
+        MenuOption(
+            key="continue",
+            label="Continue where it left off",
+            icon=Icons.PLAY,
+            description="Resume building from the last checkpoint",
+        ),
+        MenuOption(
+            key="review",
+            label="Review what was built",
+            icon=Icons.FILE,
+            description="See the files that were created/modified",
+        ),
+        MenuOption(
+            key="merge",
+            label="Add to my project now",
+            icon=Icons.SUCCESS,
+            description="Merge the existing build into your project",
+        ),
+        MenuOption(
+            key="fresh",
+            label="Start fresh",
+            icon=Icons.ERROR,
+            description="Discard current build and start over",
+        ),
+    ]
+
+    print()
+    choice = select_menu(
+        title="What would you like to do?",
+        options=options,
+        allow_quit=True,
+    )
+
+    if choice is None:
+        print()
+        print_status("Cancelled.", "info")
         sys.exit(0)
 
-    if choice == "1":
+    if choice == "continue":
         return True  # Continue with existing
-    elif choice == "2":
+    elif choice == "review":
         review_existing_build(project_dir, spec_name)
         print()
-        input("Press Enter to continue building...")
+        input(f"Press Enter to continue building...")
         return True
-    elif choice == "3":
+    elif choice == "merge":
         merge_existing_build(project_dir, spec_name)
         return False  # Start fresh after merge
-    elif choice == "4":
+    elif choice == "fresh":
         discarded = discard_existing_build(project_dir, spec_name)
         return not discarded  # If discarded, start fresh
     else:

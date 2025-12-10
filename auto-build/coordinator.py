@@ -22,6 +22,8 @@ Benefits:
 Prerequisites:
 - Git 2.5+ (for worktree support)
 - implementation_plan.json must exist (planner runs first if needed)
+
+Enhanced with status updates for ccstatusline integration.
 """
 
 import asyncio
@@ -35,6 +37,22 @@ from typing import Optional
 
 from implementation_plan import ImplementationPlan, Phase, Chunk, ChunkStatus
 from worktree import WorktreeManager, STAGING_WORKTREE_NAME
+from ui import (
+    Icons,
+    icon,
+    box,
+    success,
+    error,
+    warning,
+    info,
+    muted,
+    highlight,
+    bold,
+    print_status,
+    print_key_value,
+    StatusManager,
+    BuildState,
+)
 
 
 class WorkerStatus(Enum):
@@ -136,6 +154,9 @@ class SwarmCoordinator:
 
         # Merge lock for serializing merges to staging
         self._merge_lock = asyncio.Lock()
+
+        # Status manager for ccstatusline
+        self.status_manager = StatusManager(project_dir)
 
     def _get_base_branch(self) -> str:
         """Get the current branch to use as base for workers."""
@@ -286,10 +307,17 @@ class SwarmCoordinator:
 
         This runs in the main project directory (not a worktree).
         """
-        print("\n" + "=" * 70)
-        print("  PLANNER SESSION")
-        print("  Creating implementation plan from spec...")
-        print("=" * 70 + "\n")
+        content = [
+            bold(f"{icon(Icons.GEAR)} PLANNER SESSION"),
+            "",
+            muted("Creating implementation plan from spec..."),
+        ]
+        print()
+        print(box(content, width=70, style="heavy"))
+        print()
+
+        # Update status
+        self.status_manager.set_active(self.spec_dir.name, BuildState.PLANNING)
 
         # Import here to avoid circular dependency
         from agent import run_agent_session
@@ -312,20 +340,20 @@ class SwarmCoordinator:
         # Check if plan was created
         plan_file = self.spec_dir / "implementation_plan.json"
         if not plan_file.exists():
-            print("\nError: Planner did not create implementation_plan.json")
+            print_status("Planner did not create implementation_plan.json", "error")
             return False
 
-        print("\n✓ Implementation plan created successfully")
+        print_status("Implementation plan created successfully", "success")
 
         # Initialize Linear integration if enabled
         if is_linear_enabled():
             linear_manager = LinearManager(self.spec_dir, self.project_dir)
             if linear_manager.is_enabled and not linear_manager.is_initialized:
-                print("\nInitializing Linear integration...")
+                print_status("Initializing Linear integration...", "progress")
                 if linear_manager.initialize_from_plan():
-                    print("✓ Linear project and issues created")
+                    print_status("Linear project and issues created", "success")
                 else:
-                    print("⚠ Linear initialization failed (continuing without it)")
+                    print_status("Linear initialization failed (continuing without it)", "warning")
 
         return True
 
@@ -375,11 +403,19 @@ class SwarmCoordinator:
 
         Worker creates work in its own worktree, then merges to staging.
         """
-        print(f"\n{'='*70}")
-        print(f"  WORKER {worker_id}: Starting {chunk.id}")
-        print(f"  Phase: {phase.name}")
-        print(f"  Description: {chunk.description}")
-        print(f"{'='*70}\n")
+        content = [
+            bold(f"{icon(Icons.WORKER)} WORKER {worker_id}: Starting {chunk.id}"),
+            "",
+            f"Phase: {highlight(phase.name)}",
+            f"Description: {chunk.description[:60]}..." if len(chunk.description) > 60 else f"Description: {chunk.description}",
+        ]
+        print()
+        print(box(content, width=70, style="light"))
+        print()
+
+        # Update status with worker count
+        active_workers = len([w for w in self.workers.values() if w.status == WorkerStatus.WORKING])
+        self.status_manager.update_workers(active_workers + 1, self.max_workers)
 
         # Get staging info to branch from
         staging_info = self.worktree_manager.get_staging_info()
@@ -417,10 +453,10 @@ class SwarmCoordinator:
                 print(f"Worker {worker_id}: Failed to create worktree: {result.stderr}")
                 return False
 
-            print(f"Created worker worktree: {worktree_path.name} (from staging)")
+            print_status(f"Created worker worktree: {worktree_path.name} (from staging)", "success")
 
         except Exception as e:
-            print(f"Worker {worker_id}: Failed to create worktree: {e}")
+            print_status(f"Worker {worker_id}: Failed to create worktree: {e}", "error")
             return False
 
         # Claim the chunk
@@ -455,16 +491,16 @@ class SwarmCoordinator:
             prompt += f"\n**IMPORTANT:** Commit your changes when done.\n"
 
             # Run the agent session
-            print(f"Worker {worker_id}: Running in worktree {worktree_path.name}...")
+            print_status(f"Worker {worker_id}: Running in worktree {worktree_path.name}...", "progress")
             async with client:
                 status, response = await run_agent_session(
                     client, prompt, self.spec_dir, self.verbose
                 )
 
-            success = status == "continue" or status == "complete"
+            chunk_success = status == "continue" or status == "complete"
 
             # Commit any uncommitted work
-            if success:
+            if chunk_success:
                 subprocess.run(
                     ["git", "add", "."],
                     cwd=worktree_path,
@@ -477,38 +513,55 @@ class SwarmCoordinator:
                     text=True,
                 )
                 if result.returncode == 0:
-                    print(f"Worker {worker_id}: Committed changes")
+                    print_status(f"Worker {worker_id}: Committed changes", "success")
                 elif "nothing to commit" not in result.stdout + result.stderr:
-                    print(f"Worker {worker_id}: Commit issue: {result.stderr}")
+                    print_status(f"Worker {worker_id}: Commit issue: {result.stderr}", "warning")
 
             # Release the chunk
-            self.release_chunk(worker_id, chunk.id, success, response)
+            self.release_chunk(worker_id, chunk.id, chunk_success, response)
+
+            # Update status with completed chunk count
+            if self.plan:
+                progress = self.plan.get_progress()
+                self.status_manager.update_chunks(
+                    completed=progress.get("completed_chunks", 0),
+                    total=progress.get("total_chunks", 0),
+                    in_progress=progress.get("in_progress_chunks", 0),
+                )
+
+            # Update worker count
+            active_workers = len([w for w in self.workers.values() if w.status == WorkerStatus.WORKING])
+            self.status_manager.update_workers(active_workers, self.max_workers)
 
             # Merge to staging if successful
-            if success:
+            if chunk_success:
                 merge_success = await self.merge_worker_to_staging(
                     worker_id, branch_name, worktree_path
                 )
                 if not merge_success:
-                    print(f"Worker {worker_id}: Merge to staging failed for {chunk.id}")
+                    print_status(f"Worker {worker_id}: Merge to staging failed for {chunk.id}", "error")
                     # Mark chunk as failed due to merge conflict
                     for p in self.plan.phases:
                         for c in p.chunks:
                             if c.id == chunk.id:
                                 c.fail("Merge conflict")
-                    success = False
+                    chunk_success = False
 
             # Clean up worker worktree
             self._cleanup_worker_worktree(worktree_path, branch_name)
 
-            return success
+            return chunk_success
 
         except Exception as e:
-            print(f"Worker {worker_id}: Error executing chunk {chunk.id}: {e}")
+            print_status(f"Worker {worker_id}: Error executing chunk {chunk.id}: {e}", "error")
 
             # Clean up on error
             self.release_chunk(worker_id, chunk.id, False, str(e))
             self._cleanup_worker_worktree(worktree_path, branch_name)
+
+            # Update worker count
+            active_workers = len([w for w in self.workers.values() if w.status == WorkerStatus.WORKING])
+            self.status_manager.update_workers(active_workers, self.max_workers)
 
             return False
 
@@ -564,23 +617,31 @@ class SwarmCoordinator:
         # Check if implementation plan exists, run planner if not
         plan_file = self.spec_dir / "implementation_plan.json"
         if not plan_file.exists():
-            success = await self.run_planner_session()
-            if not success:
-                print("\nFailed to create implementation plan. Exiting.")
+            planner_success = await self.run_planner_session()
+            if not planner_success:
+                print_status("Failed to create implementation plan. Exiting.", "error")
                 return None
 
-        print(f"\n{'='*70}")
-        print(f"  PARALLEL EXECUTION MODE")
-        print(f"  Max Workers: {self.max_workers}")
-        print(f"  All work collected in staging worktree for testing")
-        print(f"{'='*70}\n")
+        content = [
+            bold(f"{icon(Icons.LIGHTNING)} PARALLEL EXECUTION MODE"),
+            "",
+            f"Max Workers: {highlight(str(self.max_workers))}",
+            muted("All work collected in staging worktree for testing"),
+        ]
+        print()
+        print(box(content, width=70, style="heavy"))
+        print()
+
+        # Initialize status
+        self.status_manager.set_active(self.spec_dir.name, BuildState.BUILDING)
+        self.status_manager.update_workers(0, self.max_workers)
 
         # Load the implementation plan
         self.load_implementation_plan()
 
         # Get the base branch
         base_branch = self._get_base_branch()
-        print(f"Base branch: {base_branch}")
+        print_key_value("Base branch", base_branch)
 
         # Initialize worktree manager
         self.worktree_manager = WorktreeManager(self.project_dir, base_branch)
@@ -589,9 +650,17 @@ class SwarmCoordinator:
         # Create or get the staging worktree
         spec_name = self._get_spec_name()
         staging_info = self.worktree_manager.get_or_create_staging(spec_name)
-        print(f"Staging worktree: {staging_info.path}")
-        print(f"Staging branch: {staging_info.branch}")
+        print_key_value("Staging worktree", str(staging_info.path))
+        print_key_value("Staging branch", staging_info.branch)
         print()
+
+        # Update status with initial chunk counts
+        progress = self.plan.get_progress()
+        self.status_manager.update_chunks(
+            completed=progress.get("completed_chunks", 0),
+            total=progress.get("total_chunks", 0),
+            in_progress=0,
+        )
 
         # Load any existing progress
         self.load_progress()
@@ -607,7 +676,7 @@ class SwarmCoordinator:
 
                 # Check if we're done
                 if not available_chunks and not worker_tasks:
-                    print("\n✓ All chunks completed!")
+                    print_status("All chunks completed!", "success")
                     break
 
                 # Assign chunks to available workers
@@ -616,7 +685,7 @@ class SwarmCoordinator:
                     worker_id = str(next_worker_id)
                     next_worker_id += 1
 
-                    print(f"Assigned chunk {chunk.id} to worker {worker_id}")
+                    print_status(f"Assigned chunk {chunk.id} to worker {worker_id}", "info")
 
                     # Start worker task
                     task = asyncio.create_task(
@@ -638,9 +707,12 @@ class SwarmCoordinator:
                             if t == task:
                                 try:
                                     result = await task
-                                    print(f"\nWorker {wid} completed: {'SUCCESS' if result else 'FAILED'}")
+                                    if result:
+                                        print_status(f"Worker {wid} completed: SUCCESS", "success")
+                                    else:
+                                        print_status(f"Worker {wid} completed: FAILED", "error")
                                 except Exception as e:
-                                    print(f"\nWorker {wid} crashed: {e}")
+                                    print_status(f"Worker {wid} crashed: {e}", "error")
                                 del worker_tasks[wid]
                                 break
 
@@ -653,19 +725,23 @@ class SwarmCoordinator:
 
         finally:
             # Clean up only worker worktrees, preserve staging
-            print("\nCleaning up worker worktrees...")
+            print_status("Cleaning up worker worktrees...", "info")
             self.worktree_manager.cleanup_workers_only()
 
         # Print final summary
-        print(f"\n{'='*70}")
-        print(f"  BUILD COMPLETE!")
-        print(f"{'='*70}\n")
-
         progress = self.plan.get_progress()
-        print(f"Completed: {progress['completed_chunks']}/{progress['total_chunks']} chunks")
-
+        content = [
+            success(f"{icon(Icons.SUCCESS)} BUILD COMPLETE!"),
+            "",
+            f"Completed: {progress['completed_chunks']}/{progress['total_chunks']} chunks",
+        ]
         if progress['failed_chunks'] > 0:
-            print(f"⚠ Failed chunks: {progress['failed_chunks']}")
+            content.append(warning(f"{icon(Icons.WARNING)} Failed chunks: {progress['failed_chunks']}"))
+        print()
+        print(box(content, width=70, style="heavy"))
+
+        # Update status to complete
+        self.status_manager.update(state=BuildState.COMPLETE)
 
         # Show staging info
         staging_path = self.worktree_manager.get_staging_path()
@@ -673,35 +749,37 @@ class SwarmCoordinator:
             summary = self.worktree_manager.get_change_summary()
             test_commands = self.worktree_manager.get_test_commands(staging_path)
 
-            print(f"\n{'='*70}")
-            print(f"  YOUR FEATURE IS READY TO TEST")
-            print(f"{'='*70}\n")
-
-            print(f"All work has been collected in:")
-            print(f"  {staging_path}\n")
+            content = [
+                bold(f"{icon(Icons.PLAY)} YOUR FEATURE IS READY TO TEST"),
+                "",
+                f"All work collected in: {highlight(str(staging_path))}",
+            ]
+            print()
+            print(box(content, width=70, style="light"))
 
             if summary["new_files"] + summary["modified_files"] + summary["deleted_files"] > 0:
-                print("Changes:")
-                if summary["new_files"] > 0:
-                    print(f"  + {summary['new_files']} new files")
-                if summary["modified_files"] > 0:
-                    print(f"  ~ {summary['modified_files']} modified files")
-                if summary["deleted_files"] > 0:
-                    print(f"  - {summary['deleted_files']} deleted files")
                 print()
+                print(bold("Changes:"))
+                if summary["new_files"] > 0:
+                    print(success(f"  + {summary['new_files']} new files"))
+                if summary["modified_files"] > 0:
+                    print(info(f"  ~ {summary['modified_files']} modified files"))
+                if summary["deleted_files"] > 0:
+                    print(error(f"  - {summary['deleted_files']} deleted files"))
 
+            print()
             print("To test it:")
-            print(f"  cd {staging_path}")
+            print(highlight(f"  cd {staging_path}"))
             for cmd in test_commands[:2]:  # Show first 2 commands
                 print(f"  {cmd}")
             print()
 
             print("When you're happy with it:")
-            print(f"  python auto-build/run.py --spec {spec_name} --merge")
+            print(highlight(f"  python auto-build/run.py --spec {spec_name} --merge"))
             print()
 
             print("To see what changed:")
-            print(f"  python auto-build/run.py --spec {spec_name} --review")
+            print(muted(f"  python auto-build/run.py --spec {spec_name} --review"))
             print()
 
         return staging_path

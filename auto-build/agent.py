@@ -9,6 +9,8 @@ Architecture:
 - Orchestrator (Python) handles all bookkeeping: memory, commits, progress
 - Agent focuses ONLY on implementing code
 - Post-session processing updates memory automatically (100% reliable)
+
+Enhanced with status file updates for ccstatusline integration.
 """
 
 import asyncio
@@ -23,9 +25,12 @@ from client import create_client
 from progress import (
     print_session_header,
     print_progress_summary,
+    print_build_complete_banner,
     count_chunks,
+    count_chunks_detailed,
     is_build_complete,
     get_next_chunk,
+    get_current_phase,
 )
 from prompt_generator import (
     generate_chunk_prompt,
@@ -39,6 +44,22 @@ from linear_integration import (
     LinearManager,
     is_linear_enabled,
     prepare_coder_linear_instructions,
+)
+from ui import (
+    Icons,
+    icon,
+    box,
+    success,
+    error,
+    warning,
+    info,
+    muted,
+    highlight,
+    bold,
+    print_status,
+    print_key_value,
+    StatusManager,
+    BuildState,
 )
 
 
@@ -116,6 +137,7 @@ def post_session_processing(
     commit_count_before: int,
     recovery_manager: RecoveryManager,
     linear_manager: Optional[LinearManager] = None,
+    status_manager: Optional[StatusManager] = None,
 ) -> bool:
     """
     Process session results and update memory automatically.
@@ -131,11 +153,13 @@ def post_session_processing(
         commit_count_before: Number of commits before session
         recovery_manager: Recovery manager instance
         linear_manager: Optional Linear integration manager
+        status_manager: Optional status manager for ccstatusline
 
     Returns:
         True if chunk was completed successfully
     """
-    print("\n--- Post-Session Processing ---")
+    print()
+    print(muted("--- Post-Session Processing ---"))
 
     # Check if implementation plan was updated
     plan = load_implementation_plan(spec_dir)
@@ -155,12 +179,21 @@ def post_session_processing(
     commit_count_after = get_commit_count(project_dir)
     new_commits = commit_count_after - commit_count_before
 
-    print(f"  Chunk status: {chunk_status}")
-    print(f"  New commits: {new_commits}")
+    print_key_value("Chunk status", chunk_status)
+    print_key_value("New commits", str(new_commits))
 
     if chunk_status == "completed":
         # Success! Record the attempt and good commit
-        print(f"  ✓ Chunk {chunk_id} completed successfully")
+        print_status(f"Chunk {chunk_id} completed successfully", "success")
+
+        # Update status file
+        if status_manager:
+            chunks = count_chunks_detailed(spec_dir)
+            status_manager.update_chunks(
+                completed=chunks["completed"],
+                total=chunks["total"],
+                in_progress=0,
+            )
 
         # Record successful attempt
         recovery_manager.record_attempt(
@@ -173,7 +206,7 @@ def post_session_processing(
         # Record good commit for rollback safety
         if commit_after and commit_after != commit_before:
             recovery_manager.record_good_commit(commit_after, chunk_id)
-            print(f"  ✓ Recorded good commit: {commit_after[:8]}")
+            print_status(f"Recorded good commit: {commit_after[:8]}", "success")
 
         # Record Linear session result (if enabled)
         if linear_manager and linear_manager.is_initialized:
@@ -184,13 +217,13 @@ def post_session_processing(
                 approach=f"Implemented: {chunk.get('description', 'chunk')[:100]}",
                 git_commit=commit_after or "",
             )
-            print(f"  ✓ Linear session recorded")
+            print_status("Linear session recorded", "success")
 
         return True
 
     elif chunk_status == "in_progress":
         # Session ended without completion
-        print(f"  ⚠ Chunk {chunk_id} still in progress")
+        print_status(f"Chunk {chunk_id} still in progress", "warning")
 
         recovery_manager.record_attempt(
             chunk_id=chunk_id,
@@ -203,7 +236,7 @@ def post_session_processing(
         # Still record commit if one was made (partial progress)
         if commit_after and commit_after != commit_before:
             recovery_manager.record_good_commit(commit_after, chunk_id)
-            print(f"  ✓ Recorded partial progress commit: {commit_after[:8]}")
+            print_status(f"Recorded partial progress commit: {commit_after[:8]}", "info")
 
         # Record Linear session result (if enabled)
         if linear_manager and linear_manager.is_initialized:
@@ -220,7 +253,7 @@ def post_session_processing(
 
     else:
         # Chunk still pending or failed
-        print(f"  ✗ Chunk {chunk_id} not completed (status: {chunk_status})")
+        print_status(f"Chunk {chunk_id} not completed (status: {chunk_status})", "error")
 
         recovery_manager.record_attempt(
             chunk_id=chunk_id,
@@ -349,54 +382,67 @@ async def run_autonomous_agent(
     # Initialize recovery manager (handles memory persistence)
     recovery_manager = RecoveryManager(spec_dir, project_dir)
 
+    # Initialize status manager for ccstatusline
+    status_manager = StatusManager(project_dir)
+    status_manager.set_active(spec_dir.name, BuildState.BUILDING)
+
+    # Update initial chunk counts
+    chunks = count_chunks_detailed(spec_dir)
+    status_manager.update_chunks(
+        completed=chunks["completed"],
+        total=chunks["total"],
+        in_progress=chunks["in_progress"],
+    )
+
     # Initialize Linear manager (optional integration)
     linear_manager = None
     if is_linear_enabled():
         linear_manager = LinearManager(spec_dir, project_dir)
         if linear_manager.is_enabled:
-            print("Linear integration: ENABLED")
+            print_status("Linear integration: ENABLED", "success")
             if linear_manager.is_initialized:
                 summary = linear_manager.get_progress_summary()
-                print(f"  Project: {summary.get('project_name', 'Unknown')}")
-                print(f"  Issues: {summary.get('mapped_chunks', 0)}/{summary.get('total_chunks', 0)} mapped")
+                print_key_value("Project", summary.get('project_name', 'Unknown'))
+                print_key_value("Issues", f"{summary.get('mapped_chunks', 0)}/{summary.get('total_chunks', 0)} mapped")
             else:
-                print("  Status: Not yet initialized (will setup during planner session)")
+                print(muted("  Status: Not yet initialized (will setup during planner session)"))
             print()
 
     # Check if this is a fresh start or continuation
     first_run = is_first_run(spec_dir)
 
     if first_run:
-        print("Fresh start - will use Planner Agent to create implementation plan")
+        print_status("Fresh start - will use Planner Agent to create implementation plan", "info")
+        content = [
+            bold(f"{icon(Icons.GEAR)} PLANNER SESSION"),
+            "",
+            f"Spec: {highlight(spec_dir.name)}",
+            muted("The agent will analyze your spec and create a chunk-based plan."),
+        ]
         print()
-        print("=" * 70)
-        print("  PLANNER SESSION")
-        print(f"  Spec: {spec_dir.name}")
-        print("  The agent will analyze your spec and create a chunk-based plan.")
-        print("=" * 70)
+        print(box(content, width=70, style="heavy"))
         print()
+
+        # Update status for planning phase
+        status_manager.update(state=BuildState.PLANNING)
     else:
-        print(f"Continuing build: {spec_dir.name}")
+        print(f"Continuing build: {highlight(spec_dir.name)}")
         print_progress_summary(spec_dir)
 
         # Check if already complete
         if is_build_complete(spec_dir):
-            print("\n" + "=" * 70)
-            print("  BUILD ALREADY COMPLETE!")
-            print("=" * 70)
-            print("\nAll chunks are completed. The build is ready for human review.")
-            print("\nNext steps:")
-            print("  1. Review the code on the auto-build/* branch")
-            print("  2. Run manual tests")
-            print("  3. Merge to main when satisfied")
+            print_build_complete_banner(spec_dir)
+            status_manager.update(state=BuildState.COMPLETE)
             return
 
     # Show human intervention hint
-    print("-" * 70)
-    print("  INTERACTIVE CONTROLS:")
-    print("  Press Ctrl+C once  → Pause and optionally add instructions")
-    print("  Press Ctrl+C twice → Exit immediately")
-    print("-" * 70)
+    content = [
+        bold("INTERACTIVE CONTROLS"),
+        "",
+        f"Press {highlight('Ctrl+C')} once  {icon(Icons.ARROW_RIGHT)} Pause and optionally add instructions",
+        f"Press {highlight('Ctrl+C')} twice {icon(Icons.ARROW_RIGHT)} Exit immediately",
+    ]
+    print(box(content, width=70, style="light"))
     print()
 
     # Main loop
@@ -431,9 +477,29 @@ async def run_autonomous_agent(
         # Get the next chunk to work on
         next_chunk = get_next_chunk(spec_dir)
         chunk_id = next_chunk.get("id") if next_chunk else None
+        phase_name = next_chunk.get("phase_name") if next_chunk else None
+
+        # Update status for this session
+        status_manager.update_session(iteration)
+        if phase_name:
+            current_phase = get_current_phase(spec_dir)
+            if current_phase:
+                status_manager.update_phase(
+                    current_phase.get("name", ""),
+                    current_phase.get("phase", 0),
+                    current_phase.get("total", 0),
+                )
+        status_manager.update_chunks(in_progress=1)
 
         # Print session header
-        print_session_header(iteration, first_run)
+        print_session_header(
+            session_num=iteration,
+            is_planner=first_run,
+            chunk_id=chunk_id,
+            chunk_desc=next_chunk.get("description") if next_chunk else None,
+            phase_name=phase_name,
+            attempt=recovery_manager.get_attempt_count(chunk_id) + 1 if chunk_id else 1,
+        )
 
         # Capture state before session for post-processing
         commit_before = get_latest_commit(project_dir)
@@ -475,10 +541,10 @@ async def run_autonomous_agent(
                 prompt += "\n\n" + format_context_for_prompt(context)
 
             # Show what we're working on
-            print(f"Working on: {chunk_id}")
+            print(f"Working on: {highlight(chunk_id)}")
             print(f"Description: {next_chunk.get('description', 'No description')}")
             if attempt_count > 0:
-                print(f"⚠️  Previous attempts: {attempt_count}")
+                print_status(f"Previous attempts: {attempt_count}", "warning")
             print()
 
         # Run session with async context manager
@@ -498,6 +564,7 @@ async def run_autonomous_agent(
                 commit_count_before=commit_count_before,
                 recovery_manager=recovery_manager,
                 linear_manager=linear_manager,
+                status_manager=status_manager,
             )
 
             # Check for stuck chunks
@@ -507,8 +574,9 @@ async def run_autonomous_agent(
                     chunk_id,
                     f"Failed after {attempt_count} attempts"
                 )
-                print(f"\n⚠️  Chunk {chunk_id} marked as STUCK after {attempt_count} attempts")
-                print("Consider: manual intervention or skipping this chunk")
+                print()
+                print_status(f"Chunk {chunk_id} marked as STUCK after {attempt_count} attempts", "error")
+                print(muted("Consider: manual intervention or skipping this chunk"))
 
                 # Prepare Linear escalation data (if enabled)
                 if linear_manager and linear_manager.is_initialized:
@@ -519,40 +587,37 @@ async def run_autonomous_agent(
                         attempts=chunk_history.get("attempts", []),
                         reason=f"Failed after {attempt_count} attempts",
                     )
-                    print(f"  Linear escalation prepared for issue: {escalation.get('issue_id')}")
+                    print_key_value("Linear escalation prepared for issue", escalation.get('issue_id'))
 
         # Handle session status
         if status == "complete":
-            print("\n" + "=" * 70)
-            print("  BUILD COMPLETE!")
-            print("=" * 70)
-            print_progress_summary(spec_dir)
-            print("\nAll chunks are completed. The build is ready for human review.")
-            print("\nNext steps:")
-            print("  1. Review the code on the auto-build/* branch")
-            print("  2. Run manual tests")
-            print("  3. Create a PR and merge to main when satisfied")
+            print_build_complete_banner(spec_dir)
+            status_manager.update(state=BuildState.COMPLETE)
             break
 
         elif status == "continue":
-            print(f"\nAgent will auto-continue in {AUTO_CONTINUE_DELAY_SECONDS}s...")
+            print(muted(f"\nAgent will auto-continue in {AUTO_CONTINUE_DELAY_SECONDS}s..."))
             print_progress_summary(spec_dir)
+
+            # Update state back to building
+            status_manager.update(state=BuildState.BUILDING)
 
             # Show next chunk info
             next_chunk = get_next_chunk(spec_dir)
             if next_chunk:
                 chunk_id = next_chunk.get('id')
-                print(f"\nNext: {chunk_id} - {next_chunk.get('description')}")
+                print(f"\nNext: {highlight(chunk_id)} - {next_chunk.get('description')}")
 
                 attempt_count = recovery_manager.get_attempt_count(chunk_id)
                 if attempt_count > 0:
-                    print(f"  ⚠️  WARNING: {attempt_count} previous attempt(s)")
+                    print_status(f"WARNING: {attempt_count} previous attempt(s)", "warning")
 
             await asyncio.sleep(AUTO_CONTINUE_DELAY_SECONDS)
 
         elif status == "error":
-            print("\nSession encountered an error")
-            print("Will retry with a fresh session...")
+            print_status("Session encountered an error", "error")
+            print(muted("Will retry with a fresh session..."))
+            status_manager.update(state=BuildState.ERROR)
             await asyncio.sleep(AUTO_CONTINUE_DELAY_SECONDS)
 
         # Small delay between sessions
@@ -561,35 +626,50 @@ async def run_autonomous_agent(
             await asyncio.sleep(1)
 
     # Final summary
-    print("\n" + "=" * 70)
-    print("  SESSION SUMMARY")
-    print("=" * 70)
-    print(f"\nProject directory: {project_dir}")
-    print(f"Spec: {spec_dir.name}")
-    print(f"Sessions completed: {iteration}")
+    content = [
+        bold(f"{icon(Icons.SESSION)} SESSION SUMMARY"),
+        "",
+        f"Project: {project_dir}",
+        f"Spec: {highlight(spec_dir.name)}",
+        f"Sessions completed: {iteration}",
+    ]
+    print()
+    print(box(content, width=70, style="heavy"))
     print_progress_summary(spec_dir)
 
     # Show stuck chunks if any
     stuck_chunks = recovery_manager.get_stuck_chunks()
     if stuck_chunks:
-        print("\n⚠️  STUCK CHUNKS (need manual intervention):")
+        print()
+        print_status("STUCK CHUNKS (need manual intervention):", "error")
         for stuck in stuck_chunks:
-            print(f"  - {stuck['chunk_id']}: {stuck['reason']}")
+            print(f"  {icon(Icons.ERROR)} {stuck['chunk_id']}: {stuck['reason']}")
 
     # Instructions
-    print("\n" + "-" * 70)
-    print("  NEXT STEPS")
-    print("-" * 70)
-
     completed, total = count_chunks(spec_dir)
     if completed < total:
-        print(f"\n  {total - completed} chunks remaining.")
-        print(f"  Run again to continue: python auto-build/run.py --spec {spec_dir.name}")
+        content = [
+            bold(f"{icon(Icons.PLAY)} NEXT STEPS"),
+            "",
+            f"{total - completed} chunks remaining.",
+            f"Run again: {highlight(f'python auto-build/run.py --spec {spec_dir.name}')}",
+        ]
     else:
-        print("\n  All chunks completed!")
-        print("  1. Review the auto-build/* branch")
-        print("  2. Run manual tests")
-        print("  3. Merge to main")
+        content = [
+            bold(f"{icon(Icons.SUCCESS)} NEXT STEPS"),
+            "",
+            "All chunks completed!",
+            "  1. Review the auto-build/* branch",
+            "  2. Run manual tests",
+            "  3. Merge to main",
+        ]
 
-    print("-" * 70)
     print()
+    print(box(content, width=70, style="light"))
+    print()
+
+    # Set final status
+    if completed == total:
+        status_manager.update(state=BuildState.COMPLETE)
+    else:
+        status_manager.update(state=BuildState.PAUSED)
