@@ -16,7 +16,7 @@ import struct
 import fcntl
 import tempfile
 import termios
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict
 import uuid as uuid_module
@@ -109,7 +109,7 @@ class TerminalSession:
         self.name = name
         self.cwd = cwd
         self.credentials = credentials or {}
-        self.created_at = datetime.utcnow()
+        self.created_at = datetime.now(timezone.utc)
         self.master_fd: Optional[int] = None
         self.slave_fd: Optional[int] = None
         self.pid: Optional[int] = None
