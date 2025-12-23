@@ -78,8 +78,20 @@ class GitInit(BaseModel):
     path: str
 
 
-async def run_git_command(cwd: str, *args: str) -> tuple[int, str, str]:
-    """Run a git command and return (returncode, stdout, stderr)."""
+async def run_git_command(cwd: str, *args: str, timeout: float = 60.0) -> tuple[int, str, str]:
+    """Run a git command and return (returncode, stdout, stderr).
+
+    Args:
+        cwd: Working directory for the git command
+        *args: Git command arguments
+        timeout: Maximum time in seconds to wait for the command (default: 60)
+
+    Returns:
+        Tuple of (returncode, stdout, stderr)
+
+    Raises:
+        asyncio.TimeoutError: If the command exceeds the timeout
+    """
     process = await asyncio.create_subprocess_exec(
         "git",
         *args,
@@ -87,8 +99,14 @@ async def run_git_command(cwd: str, *args: str) -> tuple[int, str, str]:
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
     )
-    stdout, stderr = await process.communicate()
-    return process.returncode, stdout.decode().strip(), stderr.decode().strip()
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        return process.returncode, stdout.decode().strip(), stderr.decode().strip()
+    except asyncio.TimeoutError:
+        # Kill the process if it times out
+        process.kill()
+        await process.wait()
+        return -1, "", f"Git command timed out after {timeout} seconds"
 
 
 @router.get("/branches")
