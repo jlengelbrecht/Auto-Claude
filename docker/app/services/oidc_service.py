@@ -5,7 +5,7 @@ Handles OpenID Connect authentication flow for enterprise SSO.
 
 import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlencode
 
@@ -340,7 +340,7 @@ class OIDCService:
         user = await self.find_user_by_oidc_subject(user_info.subject)
         if user:
             # Update last login
-            user.last_login = datetime.utcnow()
+            user.last_login = datetime.now(timezone.utc)
             await self.db.commit()
             return user
 
@@ -352,7 +352,7 @@ class OIDCService:
                 user.oidc_subject = user_info.subject
                 user.oidc_provider = config.provider_name
                 user.auth_method = "oidc"
-                user.last_login = datetime.utcnow()
+                user.last_login = datetime.now(timezone.utc)
                 await self.db.commit()
                 return user
 
@@ -391,7 +391,7 @@ class OIDCService:
             oidc_subject=user_info.subject,
             oidc_provider=config.provider_name,
             auth_method="oidc",
-            last_login=datetime.utcnow(),
+            last_login=datetime.now(timezone.utc),
         )
 
         self.db.add(user)
