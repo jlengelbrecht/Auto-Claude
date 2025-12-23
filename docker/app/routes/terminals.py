@@ -353,7 +353,19 @@ class TerminalSession:
                     os.kill(self.pid, signal.SIGKILL)
                 except OSError:
                     pass
-                os.waitpid(self.pid, os.WNOHANG)
+                # Retry waitpid to ensure process is reaped
+                for retry in range(5):
+                    try:
+                        pid_result, _ = os.waitpid(self.pid, os.WNOHANG)
+                        if pid_result != 0:
+                            # Process was reaped successfully
+                            break
+                    except ChildProcessError:
+                        # Process already reaped
+                        break
+                    except OSError:
+                        break
+                    await asyncio.sleep(0.1 * (retry + 1))
             except OSError:
                 pass
 
