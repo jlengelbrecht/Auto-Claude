@@ -5,7 +5,6 @@ Provides git repository operations for the web UI.
 
 import asyncio
 from pathlib import Path
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
