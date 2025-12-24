@@ -319,7 +319,17 @@ async def create_task(
     # Get the newly created spec
     specs = await spec_service.list_specs(project)
     if specs:
-        newest_spec = max(specs, key=lambda s: s.id)
+        # Use numeric prefix comparison for spec IDs like "001-name", "002-name"
+        def get_spec_numeric_prefix(spec) -> int:
+            """Extract numeric prefix from spec ID for proper sorting."""
+            try:
+                # Spec IDs are formatted as "NNN-name" (e.g., "001-my-feature")
+                prefix = spec.id.split("-")[0]
+                return int(prefix)
+            except (ValueError, IndexError, AttributeError):
+                return 0
+
+        newest_spec = max(specs, key=get_spec_numeric_prefix)
         task = await spec_to_task(newest_spec, project.path)
         return task
 
