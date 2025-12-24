@@ -20,13 +20,27 @@ services:
       #   web:
       #     volumes:
       #       - /path/to/local/repos:/repos/local:rw
-    # Security: Enable terminal sandboxing with bubblewrap
-    # These capabilities allow namespace isolation for secure terminal sessions
+    # ============================================================================
+    # SECURITY PRIVILEGE ESCALATIONS
+    # ============================================================================
+    # Required for bubblewrap sandbox isolation in Claude Code terminal sessions.
+    # Bubblewrap (bwrap) creates lightweight containers using Linux namespaces
+    # to isolate untrusted code execution from the host system.
+    #
+    # Why these are needed:
+    # - SYS_ADMIN: Required for bubblewrap to create user/mount/pid namespaces
+    # - seccomp:unconfined: Allows namespace-related syscalls (clone, unshare)
+    # - apparmor:unconfined: Permits namespace operations blocked by default profile
+    #
+    # Security note: These privileges are scoped to the container only.
+    # The bubblewrap sandbox provides defense-in-depth by isolating each
+    # terminal session, preventing lateral movement if compromised.
+    # ============================================================================
     cap_add:
-      - SYS_ADMIN
+      - SYS_ADMIN                 # Required for bubblewrap namespace creation
     security_opt:
-      - seccomp:unconfined
-      - apparmor:unconfined
+      - seccomp:unconfined        # Required for bubblewrap syscalls (clone, unshare)
+      - apparmor:unconfined       # Required for bubblewrap namespace operations
     environment:
       # Database
       - DATABASE_URL=postgresql+asyncpg://autoclaude:${POSTGRES_PASSWORD:-autoclaude}@postgres:5432/autoclaude
