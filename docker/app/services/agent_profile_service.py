@@ -113,7 +113,15 @@ class AgentProfileService:
             if key in allowed_fields and hasattr(profile, key):
                 # Handle enum conversion for memory_backend
                 if key == "memory_backend" and isinstance(value, str):
-                    value = MemoryBackend(value)
+                    try:
+                        value = MemoryBackend(value)
+                    except ValueError:
+                        valid_values = [e.value for e in MemoryBackend]
+                        raise AgentProfileError(
+                            f"Invalid memory_backend value: '{value}'. "
+                            f"Valid values are: {valid_values}",
+                            "invalid_memory_backend",
+                        )
                 setattr(profile, key, value)
 
         profile.updated_at = datetime.now(timezone.utc)
