@@ -3,6 +3,7 @@
 Handles OpenID Connect authentication flow for enterprise SSO.
 """
 
+import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import User, UserRole
 from db.models.settings import SystemSettings
 from services.credential_service import CredentialService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -154,7 +157,8 @@ class OIDCService:
                     jwks_uri=data.get("jwks_uri"),
                 )
                 return self._provider_metadata
-        except Exception:
+        except Exception as e:
+            logger.error("Failed to fetch OIDC provider metadata: %s", str(e))
             return None
 
     async def test_discovery(self) -> OIDCResult:
@@ -272,7 +276,8 @@ class OIDCService:
                     refresh_token=data.get("refresh_token"),
                     expires_in=data.get("expires_in"),
                 )
-        except Exception:
+        except Exception as e:
+            logger.error("Failed to exchange OIDC authorization code: %s", str(e))
             return None
 
     async def get_user_info(
@@ -301,6 +306,7 @@ class OIDCService:
                 # Validate 'sub' claim - required per OIDC spec
                 subject = data.get("sub")
                 if not subject:
+                    logger.warning("OIDC userinfo response missing required 'sub' claim")
                     return None
 
                 return OIDCUserInfo(
@@ -311,7 +317,8 @@ class OIDCService:
                     email_verified=data.get("email_verified", False),
                     raw_claims=data,
                 )
-        except Exception:
+        except Exception as e:
+            logger.error("Failed to fetch OIDC user info: %s", str(e))
             return None
 
     async def find_user_by_oidc_subject(self, subject: str) -> Optional[User]:
